@@ -1,10 +1,14 @@
+import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-public class BookMyStayApp {
+// Main application class
+public class BookMyStayApp implements Serializable {
+
+    private static final String DATA_FILE = "bookings.ser";
 
     // ---------------- INVENTORY ----------------
-    static class RoomInventory {
+    static class RoomInventory implements Serializable {
         private Map<String, Integer> inventory = new HashMap<>();
 
         public RoomInventory() {
@@ -13,7 +17,6 @@ public class BookMyStayApp {
             inventory.put("Suite Room", 2);
         }
 
-        // Thread-safe access using synchronized
         public synchronized boolean allocate(String roomType) {
             int count = inventory.getOrDefault(roomType, 0);
             if (count > 0) {
@@ -31,10 +34,18 @@ public class BookMyStayApp {
             System.out.println("\nInventory:");
             inventory.forEach((k, v) -> System.out.println(k + " -> " + v));
         }
+
+        public Map<String, Integer> getInventory() {
+            return inventory;
+        }
+
+        public void setInventory(Map<String, Integer> inv) {
+            this.inventory = inv;
+        }
     }
 
     // ---------------- RESERVATION ----------------
-    static class Reservation {
+    static class Reservation implements Serializable {
         String guestName;
         String roomType;
 
@@ -45,7 +56,7 @@ public class BookMyStayApp {
     }
 
     // ---------------- BOOKING SERVICE ----------------
-    static class BookingService {
+    static class BookingService implements Serializable {
         private RoomInventory inventory;
         private Map<String, String> confirmedBookings = new HashMap<>();
         private int counter = 100;
@@ -58,21 +69,17 @@ public class BookMyStayApp {
             return confirmedBookings;
         }
 
-        // Thread-safe booking
-        public void bookRoom(Reservation r) {
-            synchronized (this) {
-                if (r.guestName == null || r.guestName.isEmpty()) {
-                    System.out.println("ERROR: Invalid guest name");
-                    return;
-                }
-
-                if (inventory.allocate(r.roomType)) {
-                    String reservationId = generateId(r.roomType);
-                    confirmedBookings.put(reservationId, r.roomType);
-                    System.out.println("CONFIRMED: " + r.guestName + " -> " + reservationId);
-                } else {
-                    System.out.println("ERROR: Room unavailable for " + r.guestName + " (" + r.roomType + ")");
-                }
+        public synchronized void bookRoom(Reservation r) {
+            if (r.guestName == null || r.guestName.isEmpty()) {
+                System.out.println("ERROR: Invalid guest name");
+                return;
+            }
+            if (inventory.allocate(r.roomType)) {
+                String reservationId = generateId(r.roomType);
+                confirmedBookings.put(reservationId, r.roomType);
+                System.out.println("CONFIRMED: " + r.guestName + " -> " + reservationId);
+            } else {
+                System.out.println("ERROR: Room unavailable for " + r.guestName + " (" + r.roomType + ")");
             }
         }
 
@@ -82,35 +89,64 @@ public class BookMyStayApp {
         }
     }
 
+    // ---------------- PERSISTENCE ----------------
+    public static void saveState(RoomInventory inventory, BookingService service) {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(DATA_FILE))) {
+            oos.writeObject(inventory.getInventory());
+            oos.writeObject(service.getConfirmedBookings());
+            System.out.println("\nSystem state saved to " + DATA_FILE);
+        } catch (IOException e) {
+            System.out.println("ERROR: Could not save system state.");
+            e.printStackTrace();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void restoreState(RoomInventory inventory, BookingService service) {
+        File file = new File(DATA_FILE);
+        if (!file.exists()) {
+            System.out.println("No previous state found. Starting fresh.");
+            return;
+        }
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(DATA_FILE))) {
+            Map<String, Integer> inv = (Map<String, Integer>) ois.readObject();
+            Map<String, String> bookings = (Map<String, String>) ois.readObject();
+            inventory.setInventory(inv);
+            service.getConfirmedBookings().putAll(bookings);
+            System.out.println("System state restored from " + DATA_FILE);
+        } catch (IOException | ClassNotFoundException e) {
+            System.out.println("ERROR: Could not restore system state. Starting fresh.");
+        }
+    }
+
     // ---------------- MAIN ----------------
     public static void main(String[] args) throws InterruptedException {
-
         RoomInventory inventory = new RoomInventory();
         BookingService bookingService = new BookingService(inventory);
 
-        // Simulate multiple guests
+        // Restore previous state if available
+        restoreState(inventory, bookingService);
+
+        // Simulate booking requests
         List<Reservation> reservations = Arrays.asList(
                 new Reservation("Alice", "Single Room"),
                 new Reservation("Bob", "Double Room"),
                 new Reservation("Charlie", "Single Room"),
-                new Reservation("Diana", "Suite Room"),
-                new Reservation("Eve", "Single Room"),
-                new Reservation("Frank", "Double Room"),
-                new Reservation("Grace", "Suite Room")
+                new Reservation("Diana", "Suite Room")
         );
 
-        // ExecutorService for concurrency
-        ExecutorService executor = Executors.newFixedThreadPool(4);
-
+        ExecutorService executor = Executors.newFixedThreadPool(2);
         for (Reservation r : reservations) {
             executor.submit(() -> bookingService.bookRoom(r));
         }
-
         executor.shutdown();
-        executor.awaitTermination(10, TimeUnit.SECONDS);
+        executor.awaitTermination(5, TimeUnit.SECONDS);
 
-        // Show final state
+        // Display final inventory and bookings
         inventory.display();
         System.out.println("\nConfirmed Bookings: " + bookingService.getConfirmedBookings());
+
+        // Save state before exit
+        saveState(inventory, bookingService);
     }
 }
